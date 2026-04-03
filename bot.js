@@ -53,22 +53,32 @@ client.on('interactionCreate', async (interaction) => {
     });
   }
 
-  // Step 2: Channel selected — show modal asking for the message text
+  // Step 2: Channel selected — show modal asking for search criteria
   if (interaction.isStringSelectMenu() && interaction.customId === 'find_channel_select') {
     const channelId = interaction.values[0];
 
     const modal = new ModalBuilder()
       .setCustomId(`find_modal_${channelId}`)
-      .setTitle('Search for a message');
+      .setTitle('Search for a message or file');
 
     const messageInput = new TextInputBuilder()
       .setCustomId('find_message_input')
       .setLabel('Message text to search for')
       .setStyle(TextInputStyle.Short)
-      .setPlaceholder('Type the message content…')
-      .setRequired(true);
+      .setPlaceholder('Type the message content… (optional)')
+      .setRequired(false);
 
-    modal.addComponents(new ActionRowBuilder().addComponents(messageInput));
+    const fileInput = new TextInputBuilder()
+      .setCustomId('find_file_input')
+      .setLabel('File name to search for')
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder('Type the file name… (optional)')
+      .setRequired(false);
+
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(messageInput),
+      new ActionRowBuilder().addComponents(fileInput),
+    );
 
     return interaction.showModal(modal);
   }
@@ -76,7 +86,15 @@ client.on('interactionCreate', async (interaction) => {
   // Step 3: Modal submitted — search the channel and return the result
   if (interaction.isModalSubmit() && interaction.customId.startsWith('find_modal_')) {
     const channelId = interaction.customId.replace('find_modal_', '');
-    const query = interaction.fields.getTextInputValue('find_message_input');
+    const messageQuery = interaction.fields.getTextInputValue('find_message_input').trim();
+    const fileQuery = interaction.fields.getTextInputValue('find_file_input').trim();
+
+    if (!messageQuery && !fileQuery) {
+      return interaction.reply({
+        content: 'Please enter at least a message text or a file name to search for.',
+        ephemeral: true,
+      });
+    }
 
     await interaction.deferReply({ ephemeral: true });
 
@@ -88,15 +106,48 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       const messages = await channel.messages.fetch({ limit: 100 });
-      const found = messages.find((msg) => msg.content.toLowerCase().includes(query.toLowerCase()));
 
-      if (!found) {
+      // Find the first message whose content matches the text query
+      const messageMatch = messageQuery
+        ? messages.find((msg) => msg.content.toLowerCase().includes(messageQuery.toLowerCase()))
+        : null;
+
+      // Find the first message that has an attachment whose filename matches the file query
+      let fileMatch = null;
+      let fileAttachment = null;
+      if (fileQuery) {
+        for (const msg of messages.values()) {
+          const attachment = msg.attachments.find((att) =>
+            att.name && att.name.toLowerCase().includes(fileQuery.toLowerCase())
+          );
+          if (attachment) {
+            fileMatch = msg;
+            fileAttachment = attachment;
+            break;
+          }
+        }
+      }
+
+      if (!messageMatch && !fileMatch) {
         return interaction.editReply('no products found');
       }
 
-      return interaction.editReply(`Found it! Jump to the message: ${found.url}`);
+      const parts = [];
+      if (messageMatch) {
+        parts.push(`📨 Message found — jump to it: ${messageMatch.url}`);
+      }
+      if (fileMatch && fileAttachment) {
+        parts.push(`📎 File found (**${fileAttachment.name}**) — download it: ${fileAttachment.url}`);
+      }
+
+      return interaction.editReply(parts.join('\n'));
     } catch (error) {
       console.error('Error searching channel:', error);
+      if (error.code === 50013 || (error.message && error.message.includes('Missing Access'))) {
+        return interaction.editReply(
+          'I don\'t have permission to read that channel. Please make sure I have the **Read Message History** permission there.'
+        );
+      }
       return interaction.editReply('An error occurred while searching.');
     }
   }
